@@ -316,7 +316,7 @@
                 @drop.prevent="handleDrop($event)"
                 @click="$refs.fileInput.click()"
                 :class="isDragging ? 'border-[#0071e3] bg-blue-50/50 dark:bg-blue-950/20 ring-2 ring-[#0071e3]/20 scale-[1.005]' : 'border-black/[0.08] dark:border-white/[0.1] bg-white/40 dark:bg-[#1c1c1e]/40 hover:bg-white/80 dark:hover:bg-[#1c1c1e]/80'"
-                class="border-2 border-dashed rounded-2xl p-4 sm:p-5 text-center cursor-pointer transition-all duration-200"
+                class="hidden sm:block border-2 border-dashed rounded-2xl p-4 sm:p-5 text-center cursor-pointer transition-all duration-200"
             >
                 <div class="flex items-center justify-center gap-3">
                     <div class="w-8 h-8 rounded-full bg-blue-50 dark:bg-blue-950/50 text-[#0071e3] flex items-center justify-center shrink-0">
