@@ -19,6 +19,8 @@ class BucketFunctionalTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        Storage::fake('s3');
+        Storage::fake('public');
         $this->user = User::factory()->create();
     }
 
