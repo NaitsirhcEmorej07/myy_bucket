@@ -171,11 +171,22 @@ class BucketFunctionalTest extends TestCase
 
         $bucketFile = BucketFile::where('name', 'drone_shot.mp4')->first();
 
-        // Test video preview stream response
+        // Test video preview stream response (Standard 200)
         $previewResponse = $this->actingAs($this->user)->get(route('bucket.file.preview', $bucketFile->id));
         $previewResponse->assertStatus(200);
         $previewResponse->assertHeader('Content-Type', 'video/mp4');
+        $previewResponse->assertHeader('Accept-Ranges', 'bytes');
+
+        // Test video preview stream response with HTTP Range request (206 Partial Content)
+        $rangeResponse = $this->actingAs($this->user)->get(route('bucket.file.preview', $bucketFile->id), [
+            'Range' => 'bytes=0-1023',
+        ]);
+        $rangeResponse->assertStatus(206);
+        $rangeResponse->assertHeader('Content-Type', 'video/mp4');
+        $rangeResponse->assertHeader('Accept-Ranges', 'bytes');
+        $rangeResponse->assertHeader('Content-Range', "bytes 0-1023/{$bucketFile->size}");
     }
+
 
     public function test_cannot_upload_file_without_folder(): void
     {

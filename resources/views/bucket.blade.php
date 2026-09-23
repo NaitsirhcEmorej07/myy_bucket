@@ -620,7 +620,7 @@
             <!-- Backdrop -->
             <div
                 x-show="previewModal.open"
-                @click="previewModal.open = false"
+                @click="closePreview()"
                 x-transition:enter="transition ease-out duration-250"
                 x-transition:enter-start="opacity-0"
                 x-transition:enter-end="opacity-100"
@@ -664,7 +664,7 @@
                         </div>
                     </div>
                     <button
-                        @click="previewModal.open = false"
+                        @click="closePreview()"
                         type="button"
                         class="p-1.5 rounded-full text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/[0.05] dark:hover:bg-white/[0.1] cursor-pointer"
                     >
@@ -683,13 +683,18 @@
                     </template>
 
                     <template x-if="previewModal.file?.type === 'video'">
-                        <div class="text-center w-full flex flex-col items-center bg-black/90 p-3 rounded-2xl">
+                        <div class="text-center w-full flex flex-col items-center bg-black/95 p-3 rounded-2xl">
                             <video
-                                :src="previewModal.file?.previewUrl"
+                                x-ref="videoPlayer"
+                                :key="'video-' + previewModal.file?.id"
                                 controls
                                 playsinline
-                                class="max-h-[300px] max-w-full rounded-xl shadow-lg bg-black"
-                            ></video>
+                                preload="metadata"
+                                class="max-h-[300px] w-full max-w-full rounded-xl shadow-lg bg-black"
+                            >
+                                <source :src="previewModal.file?.previewUrl" :type="previewModal.file?.mimeType || 'video/mp4'">
+                                Your browser does not support HTML5 video preview.
+                            </video>
                             <div class="flex items-center justify-between w-full mt-2.5 px-1">
                                 <h4 class="font-semibold text-xs sm:text-sm text-white truncate max-w-[200px] sm:max-w-xs" x-text="previewModal.file?.name"></h4>
                                 <span class="text-[10px] text-gray-400" x-text="previewModal.file?.size"></span>
@@ -704,7 +709,10 @@
                             </div>
                             <h4 class="font-bold text-xs sm:text-sm text-gray-900 dark:text-white truncate" x-text="previewModal.file?.name"></h4>
                             <p class="text-[11px] text-[#86868b] mt-0.5" x-text="previewModal.file?.size"></p>
-                            <audio :src="previewModal.file?.previewUrl" controls class="w-full mt-3"></audio>
+                            <audio x-ref="audioPlayer" :key="'audio-' + previewModal.file?.id" controls preload="metadata" class="w-full mt-3">
+                                <source :src="previewModal.file?.previewUrl" :type="previewModal.file?.mimeType || 'audio/mpeg'">
+                                Your browser does not support HTML5 audio playback.
+                            </audio>
                         </div>
                     </template>
 
@@ -736,7 +744,7 @@
 
                     <div class="flex items-center gap-2">
                         <button
-                            @click="previewModal.open = false"
+                            @click="closePreview()"
                             type="button"
                             class="px-3.5 py-1.5 rounded-full text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-black/[0.04]"
                         >
@@ -1036,6 +1044,7 @@
                         id: f.id,
                         name: f.name,
                         type: f.category || 'other',
+                        mimeType: f.mime_type || '',
                         extension: (f.extension || '').toUpperCase(),
                         size: f.formatted_size || this.formatBytes(f.size || 0),
                         originalSize: f.formatted_original_size || f.formatted_size,
@@ -1341,7 +1350,7 @@
                             this.files = this.files.filter(f => f.id !== fileId);
                             this.showToast(`Removed "${name}"`);
                             if (this.previewModal.open && this.previewModal.file?.id === fileId) {
-                                this.previewModal.open = false;
+                                this.closePreview();
                             }
                         } else {
                             this.showToast(data.message || 'Error deleting file');
@@ -1380,6 +1389,33 @@
                 openPreview(file) {
                     this.previewModal.file = file;
                     this.previewModal.open = true;
+                    this.$nextTick(() => {
+                        if (this.$refs.videoPlayer) {
+                            try {
+                                this.$refs.videoPlayer.load();
+                            } catch (e) {}
+                        }
+                        if (this.$refs.audioPlayer) {
+                            try {
+                                this.$refs.audioPlayer.load();
+                            } catch (e) {}
+                        }
+                    });
+                },
+
+                closePreview() {
+                    if (this.$refs.videoPlayer) {
+                        try {
+                            this.$refs.videoPlayer.pause();
+                        } catch (e) {}
+                    }
+                    if (this.$refs.audioPlayer) {
+                        try {
+                            this.$refs.audioPlayer.pause();
+                        } catch (e) {}
+                    }
+                    this.previewModal.open = false;
+                    this.previewModal.file = null;
                 },
 
                 // Renaming

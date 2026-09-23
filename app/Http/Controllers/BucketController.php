@@ -11,25 +11,40 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class BucketController extends Controller
 {
     /**
-     * Determine active storage disk (Cloudflare R2/S3 or local fallback)
+     * Determine active storage disk (Laravel Cloud 'private', Cloudflare R2/S3, or local fallback)
      */
     protected function getStorageDisk(): string
     {
-        $hasKey = !empty(config('filesystems.disks.s3.key'));
-        $hasSecret = !empty(config('filesystems.disks.s3.secret'));
-        $hasBucket = !empty(config('filesystems.disks.s3.bucket'));
+        // 1. If running on Laravel Cloud or explicitly configured default disk
+        $defaultDisk = config('filesystems.default');
+        if (!empty($defaultDisk) && !in_array($defaultDisk, ['local', 'public'])) {
+            $diskConfig = config("filesystems.disks.{$defaultDisk}");
+            if (!empty($diskConfig['key']) && !empty($diskConfig['bucket'])) {
+                return $defaultDisk;
+            }
+        }
 
-        if ($hasKey && $hasSecret && $hasBucket) {
+        // 2. If 'private' disk is configured (Laravel Cloud standard)
+        $privateConfig = config('filesystems.disks.private');
+        if (!empty($privateConfig['key']) && !empty($privateConfig['bucket'])) {
+            return 'private';
+        }
+
+        // 3. If standard s3 disk is configured (Cloudflare R2)
+        $s3Config = config('filesystems.disks.s3');
+        if (!empty($s3Config['key']) && !empty($s3Config['secret']) && !empty($s3Config['bucket'])) {
             return 's3';
         }
 
         return 'public';
     }
+
 
     /**
      * Display bucket page with initial data
@@ -400,9 +415,9 @@ class BucketController extends Controller
     }
 
     /**
-     * Stream a file preview inline (with transparent decompression for compressed docs)
+     * Stream a file preview inline (with full HTTP 206 Byte Range support for video/audio seeking and transparent decompression)
      */
-    public function preview(BucketFile $file, MediaOptimizerService $optimizer): StreamedResponse
+    public function preview(Request $request, BucketFile $file, MediaOptimizerService $optimizer): Response
     {
         if ($file->user_id !== Auth::id()) {
             abort(403);
@@ -412,33 +427,160 @@ class BucketController extends Controller
             abort(404, 'File not found on storage.');
         }
 
-        $mime = $file->mime_type ?: 'application/octet-stream';
+        $mime = $this->resolveMimeType($file);
+        $rangeHeader = $request->header('Range');
 
         // If compressed, decompress on-the-fly for preview
         if ($file->is_compressed) {
             $compressedData = Storage::disk($file->disk)->get($file->path);
             $decompressed = $optimizer->decompress($compressedData);
             if ($decompressed !== null) {
+                $totalSize = strlen($decompressed);
+
+                if ($rangeHeader && preg_match('/bytes=(\d+)-(\d*)/i', $rangeHeader, $matches)) {
+                    $start = (int) $matches[1];
+                    $end = ($matches[2] !== '') ? (int) $matches[2] : ($totalSize - 1);
+
+                    if ($start > $end || $start >= $totalSize) {
+                        return response('', 416, ['Content-Range' => "bytes */{$totalSize}"]);
+                    }
+
+                    if ($end >= $totalSize) {
+                        $end = $totalSize - 1;
+                    }
+
+                    $length = $end - $start + 1;
+                    $part = substr($decompressed, $start, $length);
+
+                    return response($part, 206, [
+                        'Content-Type' => $mime,
+                        'Content-Length' => $length,
+                        'Content-Range' => "bytes {$start}-{$end}/{$totalSize}",
+                        'Accept-Ranges' => 'bytes',
+                        'Content-Disposition' => 'inline; filename="' . addslashes($file->name) . '"',
+                        'Cache-Control' => 'private, no-cache, no-store, must-revalidate',
+                    ]);
+                }
+
                 return response()->stream(function () use ($decompressed) {
                     echo $decompressed;
                 }, 200, [
                     'Content-Type' => $mime,
+                    'Content-Length' => $totalSize,
+                    'Accept-Ranges' => 'bytes',
                     'Content-Disposition' => 'inline; filename="' . addslashes($file->name) . '"',
                     'Cache-Control' => 'private, max-age=3600',
                 ]);
             }
         }
 
+        $totalSize = (int) (Storage::disk($file->disk)->size($file->path) ?: $file->size);
+
+        // Handle HTTP 206 Partial Content (Byte Range requests) required by modern video & audio players
+        if ($rangeHeader && preg_match('/bytes=(\d+)-(\d*)/i', $rangeHeader, $matches)) {
+            $start = (int) $matches[1];
+            $end = ($matches[2] !== '') ? (int) $matches[2] : ($totalSize - 1);
+
+            if ($start > $end || $start >= $totalSize) {
+                return response('', 416, [
+                    'Content-Range' => "bytes */{$totalSize}",
+                ]);
+            }
+
+            if ($end >= $totalSize) {
+                $end = $totalSize - 1;
+            }
+
+            $length = $end - $start + 1;
+            $stream = Storage::disk($file->disk)->readStream($file->path);
+
+            return response()->stream(function () use ($stream, $start, $length) {
+                if (is_resource($stream)) {
+                    @fseek($stream, $start);
+                    $remaining = $length;
+                    while ($remaining > 0 && !feof($stream)) {
+                        $chunkSize = min(65536, $remaining);
+                        $buffer = fread($stream, $chunkSize);
+                        if ($buffer === false || $buffer === '') {
+                            break;
+                        }
+                        echo $buffer;
+                        flush();
+                        $remaining -= strlen($buffer);
+                    }
+                    fclose($stream);
+                }
+            }, 206, [
+                'Content-Type' => $mime,
+                'Content-Length' => $length,
+                'Content-Range' => "bytes {$start}-{$end}/{$totalSize}",
+                'Accept-Ranges' => 'bytes',
+                'Content-Disposition' => 'inline; filename="' . addslashes($file->name) . '"',
+                'Cache-Control' => 'private, no-cache, no-store, must-revalidate',
+            ]);
+        }
+
+        // Standard 200 Stream with full range support headers and Content-Length
         $stream = Storage::disk($file->disk)->readStream($file->path);
 
         return response()->stream(function () use ($stream) {
-            fpassthru($stream);
+            if (is_resource($stream)) {
+                fpassthru($stream);
+                fclose($stream);
+            }
         }, 200, [
             'Content-Type' => $mime,
+            'Content-Length' => $totalSize,
+            'Accept-Ranges' => 'bytes',
             'Content-Disposition' => 'inline; filename="' . addslashes($file->name) . '"',
             'Cache-Control' => 'private, max-age=3600',
         ]);
     }
+
+    /**
+     * Resolve a reliable MIME type for streaming
+     */
+    protected function resolveMimeType(BucketFile $file): string
+    {
+        $mime = strtolower($file->mime_type ?? '');
+        $ext = strtolower($file->extension ?: pathinfo($file->name, PATHINFO_EXTENSION));
+
+        $knownMimes = [
+            'mp4' => 'video/mp4',
+            'm4v' => 'video/mp4',
+            'webm' => 'video/webm',
+            'ogv' => 'video/ogg',
+            'ogg' => 'video/ogg',
+            'mov' => 'video/quicktime',
+            'mkv' => 'video/x-matroska',
+            'avi' => 'video/x-msvideo',
+            'wmv' => 'video/x-ms-wmv',
+            'flv' => 'video/x-flv',
+            'mp3' => 'audio/mpeg',
+            'wav' => 'audio/wav',
+            'm4a' => 'audio/mp4',
+            'aac' => 'audio/aac',
+            'flac' => 'audio/flac',
+            'pdf' => 'application/pdf',
+            'jpg' => 'image/jpeg',
+            'jpeg' => 'image/jpeg',
+            'png' => 'image/png',
+            'webp' => 'image/webp',
+            'gif' => 'image/gif',
+            'svg' => 'image/svg+xml',
+            'txt' => 'text/plain',
+            'json' => 'application/json',
+        ];
+
+        if (empty($mime) || $mime === 'application/octet-stream') {
+            if (isset($knownMimes[$ext])) {
+                return $knownMimes[$ext];
+            }
+        }
+
+        return $mime ?: ($knownMimes[$ext] ?? 'application/octet-stream');
+    }
+
 
     /**
      * Helper to format bytes
