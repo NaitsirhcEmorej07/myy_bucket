@@ -1,0 +1,1 @@
+<img src="{{ asset(file_exists(public_path('logo/logo.png')) ? 'logo/logo.png' : 'logo.png') }}" alt="{{ config('app.name', 'Laravel') }}" {{ $attributes->merge(['class' => 'object-contain shrink-0 max-h-12']) }}>
